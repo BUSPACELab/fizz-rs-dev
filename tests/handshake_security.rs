@@ -5,6 +5,8 @@
 //! - **Mismatched `VerificationInfo` vs server DC:** The client must reject the handshake when
 //!   the server’s delegated credential does not match the [`fizz_rs::VerificationInfo`] passed to
 //!   [`fizz_rs::ClientTlsContext`].
+//! - **Happy path:** Matching CA, parent cert, delegated credential, and client `VerificationInfo`
+//!   from the same issuance, then a small application-data round-trip after the handshake.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,11 +16,15 @@ use fizz_rs::{
     Certificate, CertificatePublic, ClientTlsContext, CredentialGenerator, DelegatedCredentialData,
     ServerTlsContext, VerificationInfo,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 const HANDSHAKE_TEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Payload sent on the happy-path TLS stream after handshake (client → server).
+const HAPPY_PATH_PAYLOAD: &[u8] = b"dc-happy-path-roundtrip";
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -63,6 +69,29 @@ fn load_server_materials() -> (
     (cert_public, dc, verification_info, cert_path)
 }
 
+/// Same parent cert and CA as other tests; DC + [`VerificationInfo`] are from one issuance.
+fn load_happy_path_materials() -> (
+    CertificatePublic,
+    DelegatedCredentialData,
+    VerificationInfo,
+    PathBuf,
+) {
+    let dir = fixtures_dir();
+    let cert_path = dir.join("fizz.crt");
+    let key_path = dir.join("fizz.key");
+    let cert =
+        Certificate::load_from_files(cert_path.to_str().unwrap(), key_path.to_str().unwrap())
+            .expect("load fixture cert");
+    let cert_public =
+        CertificatePublic::load_from_file(cert_path.to_str().unwrap()).expect("cert public");
+    let generator = CredentialGenerator::new(cert).expect("generator");
+    let dc = generator
+        .generate("happy-path-roundtrip", 3600)
+        .expect("generate DC");
+    let verification_info = dc.verification_info();
+    (cert_public, dc, verification_info, cert_path)
+}
+
 async fn server_handshake_only(
     listener: TcpListener,
     cert_public: CertificatePublic,
@@ -80,6 +109,36 @@ async fn server_handshake_only(
     Ok(())
 }
 
+async fn server_happy_path_roundtrip(
+    listener: TcpListener,
+    cert_public: CertificatePublic,
+    dc: DelegatedCredentialData,
+    expected: &[u8],
+) -> Result<(), String> {
+    let (socket, _) = listener
+        .accept()
+        .await
+        .map_err(|e| format!("accept: {e}"))?;
+    let tls = ServerTlsContext::new(cert_public, dc).map_err(|e| format!("server ctx: {e}"))?;
+    let mut conn = tls
+        .accept_from_stream(socket)
+        .await
+        .map_err(|e| format!("server handshake: {e}"))?;
+
+    let mut buf = vec![0u8; expected.len()];
+    conn.read_exact(&mut buf)
+        .await
+        .map_err(|e| format!("read_exact: {e}"))?;
+    if buf.as_slice() != expected {
+        return Err(format!(
+            "payload mismatch: got {} bytes, expected {:?}",
+            buf.len(),
+            expected
+        ));
+    }
+    Ok(())
+}
+
 async fn client_handshake_only(
     addr: SocketAddr,
     verification_info: VerificationInfo,
@@ -90,6 +149,52 @@ async fn client_handshake_only(
         ClientTlsContext::new(verification_info, ca_cert.to_str().expect("ca path utf-8"))?;
     let _conn = client.connect(stream, "localhost").await?;
     Ok(())
+}
+
+async fn client_happy_path_roundtrip(
+    addr: SocketAddr,
+    verification_info: VerificationInfo,
+    ca_cert: &PathBuf,
+    payload: &[u8],
+) -> fizz_rs::Result<()> {
+    let stream = tokio::net::TcpStream::connect(addr).await?;
+    let client =
+        ClientTlsContext::new(verification_info, ca_cert.to_str().expect("ca path utf-8"))?;
+    let mut conn = client.connect(stream, "localhost").await?;
+    conn.write_all(payload).await?;
+    conn.flush().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delegated_tls_happy_path_handshake_and_round_trip() {
+    let (cert_public, dc, verification_info, ca_path) = load_happy_path_materials();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let (started_tx, started_rx) = oneshot::channel();
+    let expected = HAPPY_PATH_PAYLOAD.to_vec();
+    let server = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        server_happy_path_roundtrip(listener, cert_public, dc, &expected).await
+    });
+    started_rx.await.expect("server started");
+
+    let client = tokio::spawn(async move {
+        client_happy_path_roundtrip(addr, verification_info, &ca_path, HAPPY_PATH_PAYLOAD).await
+    });
+
+    let outcome = timeout(HANDSHAKE_TEST_TIMEOUT, async move {
+        let c = client.await.expect("client join");
+        let s = server.await.expect("server join");
+        (c, s)
+    })
+    .await;
+
+    let (client_res, server_res) = outcome.expect("happy-path test should finish (no hang)");
+    client_res.expect("client handshake and write");
+    server_res.expect("server handshake and read");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
