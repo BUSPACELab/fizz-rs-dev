@@ -130,6 +130,7 @@ void FizzClientConnection::readDataAvailable(size_t len) noexcept {
 }
 
 void FizzClientConnection::readEOF() noexcept {
+    readEof.store(true, std::memory_order_release);
     auto* transport_ = static_cast<fizz::client::AsyncFizzClient*>(transport);
     // std::cout << "Server closed connection" << std::endl;
     transport_->closeNow();
@@ -514,6 +515,10 @@ size_t client_connection_read(
 
 size_t client_read_size_hint(FizzClientConnection& conn) {
     return conn.bytesRead;
+}
+
+bool client_connection_read_eof(const FizzClientConnection& conn) {
+    return conn.readEof.load(std::memory_order_acquire);
 }
 
 size_t client_connection_write(

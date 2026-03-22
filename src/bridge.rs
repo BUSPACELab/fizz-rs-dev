@@ -220,6 +220,9 @@ pub mod ffi {
 
         fn server_read_size_hint(conn: Pin<&mut FizzServerConnection>) -> Result<usize>;
 
+        /// True after the peer has closed the TLS stream (`readEOF`); no more app data will arrive.
+        fn server_connection_read_eof(conn: &FizzServerConnection) -> bool;
+
         /// Write data to connection
         fn server_connection_write(
             conn: Pin<&mut FizzServerConnection>,
@@ -272,6 +275,9 @@ pub mod ffi {
         ) -> Result<usize>;
 
         fn client_read_size_hint(conn: Pin<&mut FizzClientConnection>) -> Result<usize>;
+
+        fn client_connection_read_eof(conn: &FizzClientConnection) -> bool;
+
         /// Write data to connection
         fn client_connection_write(
             conn: Pin<&mut FizzClientConnection>,
