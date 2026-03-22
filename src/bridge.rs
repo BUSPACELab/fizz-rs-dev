@@ -322,7 +322,7 @@ where
 }
 
 
-use std::{fmt::Formatter, marker::PhantomData};
+use std::marker::PhantomData;
 // Re-export types for use in other modules
 pub use ffi::{CertificateData, CertificatePublic, DelegatedCredential, ServiceCredential, VerificationInfo};
-use serde::{de::Visitor, ser::SerializeStruct, Deserialize, Deserializer};
+use serde::{de::Visitor, Deserialize, Deserializer};

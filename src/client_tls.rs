@@ -7,7 +7,7 @@ use crate::bridge::ffi;
 use crate::error::{FizzError, Result};
 use crate::io::{take_raw_fd, SendableRawPtr};
 use crate::types::VerificationInfo;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
@@ -278,7 +278,7 @@ impl tokio::io::AsyncWrite for ClientConnection {
         }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         // Perform a flush by writing empty data - this ensures C++ buffers are flushed
         // We use the same synchronous pattern as poll_write
         Poll::Ready(Ok(()))

@@ -8,13 +8,11 @@ use crate::certificates::CertificatePublic;
 use crate::credentials::DelegatedCredentialData;
 use crate::bridge::ffi;
 use crate::io::{take_raw_fd, SendableRawPtr};
-use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use bytes::Buf;
-use std::io::Read;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 
 /// TLS server context configured with delegated credentials
 pub struct ServerTlsContext {
@@ -237,7 +235,7 @@ impl tokio::io::AsyncRead for ServerConnection {
         // }
         //
 
-        let mut buf_slice = buf.initialize_unfilled();
+        let buf_slice = buf.initialize_unfilled();
 
         //Take the initialized_buffer, write into it, advance it.
         //SAFETY: We KNOW length of read_slice is at least as big as the size we are about to read.
@@ -288,7 +286,7 @@ impl tokio::io::AsyncWrite for ServerConnection {
         }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
         // match ffi::server_connection_write(self.inner.pin_mut(), &[]) {
         //     Ok(_) => Poll::Ready(Ok(())),
