@@ -8,13 +8,14 @@
 //! - **Happy path:** Matching CA, parent cert, delegated credential, and client `VerificationInfo`
 //!   from the same issuance, then a small application-data round-trip after the handshake.
 
+mod common;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use fizz_rs::{
-    Certificate, CertificatePublic, ClientTlsContext, CredentialGenerator, DelegatedCredentialData,
-    ServerTlsContext, VerificationInfo,
+    CertificatePublic, ClientTlsContext, DelegatedCredentialData, ServerTlsContext, VerificationInfo,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -25,72 +26,6 @@ const HANDSHAKE_TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Payload sent on the happy-path TLS stream after handshake (client → server).
 const HAPPY_PATH_PAYLOAD: &[u8] = b"dc-happy-path-roundtrip";
-
-fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-/// PEM for a self-signed cert unrelated to `fizz.crt` / the real test chain.
-fn wrong_ca_path() -> PathBuf {
-    fixtures_dir().join("wrong_ca.crt")
-}
-
-fn load_parent_generator() -> CredentialGenerator {
-    let dir = fixtures_dir();
-    let cert_path = dir.join("fizz.crt");
-    let key_path = dir.join("fizz.key");
-    let cert = Certificate::load_from_files(
-        cert_path.to_str().expect("utf-8 path"),
-        key_path.to_str().expect("utf-8 path"),
-    )
-    .expect("load fixture cert; see tests/fixtures and generate_certificate.sh");
-    CredentialGenerator::new(cert).expect("credential generator")
-}
-
-fn load_server_materials() -> (
-    CertificatePublic,
-    DelegatedCredentialData,
-    VerificationInfo,
-    PathBuf,
-) {
-    let dir = fixtures_dir();
-    let cert_path = dir.join("fizz.crt");
-    let key_path = dir.join("fizz.key");
-    let cert =
-        Certificate::load_from_files(cert_path.to_str().unwrap(), key_path.to_str().unwrap())
-            .expect("load fixture cert");
-    let cert_public =
-        CertificatePublic::load_from_file(cert_path.to_str().unwrap()).expect("cert public");
-    let generator = CredentialGenerator::new(cert).expect("generator");
-    let dc = generator
-        .generate("handshake-security-server", 3600)
-        .expect("generate DC");
-    let verification_info = dc.verification_info();
-    (cert_public, dc, verification_info, cert_path)
-}
-
-/// Same parent cert and CA as other tests; DC + [`VerificationInfo`] are from one issuance.
-fn load_happy_path_materials() -> (
-    CertificatePublic,
-    DelegatedCredentialData,
-    VerificationInfo,
-    PathBuf,
-) {
-    let dir = fixtures_dir();
-    let cert_path = dir.join("fizz.crt");
-    let key_path = dir.join("fizz.key");
-    let cert =
-        Certificate::load_from_files(cert_path.to_str().unwrap(), key_path.to_str().unwrap())
-            .expect("load fixture cert");
-    let cert_public =
-        CertificatePublic::load_from_file(cert_path.to_str().unwrap()).expect("cert public");
-    let generator = CredentialGenerator::new(cert).expect("generator");
-    let dc = generator
-        .generate("happy-path-roundtrip", 3600)
-        .expect("generate DC");
-    let verification_info = dc.verification_info();
-    (cert_public, dc, verification_info, cert_path)
-}
 
 async fn server_handshake_only(
     listener: TcpListener,
@@ -168,7 +103,10 @@ async fn client_happy_path_roundtrip(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delegated_tls_happy_path_handshake_and_round_trip() {
-    let (cert_public, dc, verification_info, ca_path) = load_happy_path_materials();
+    let (cert_public, dc, verification_info, ca_path) =
+        common::load_materials("happy-path-roundtrip").expect(
+            "load fixture cert; see tests/fixtures and generate_certificate.sh",
+        );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -199,8 +137,11 @@ async fn delegated_tls_happy_path_handshake_and_round_trip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handshake_fails_when_ca_does_not_trust_server_certificate() {
-    let (cert_public, dc, _matching_vi, _server_cert_path) = load_server_materials();
-    let wrong_ca = wrong_ca_path();
+    let (cert_public, dc, _matching_vi, _server_cert_path) =
+        common::load_materials("handshake-security-server").expect(
+            "load fixture cert; see tests/fixtures and generate_certificate.sh",
+        );
+    let wrong_ca = common::wrong_ca_path();
     assert!(
         wrong_ca.is_file(),
         "missing {}; generate with openssl req -x509 ...",
@@ -243,8 +184,11 @@ async fn handshake_fails_when_ca_does_not_trust_server_certificate() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handshake_fails_when_verification_info_does_not_match_server_delegated_credential() {
-    let (cert_public, dc_for_server, _, ca_path) = load_server_materials();
-    let generator = load_parent_generator();
+    let (cert_public, dc_for_server, _, ca_path) =
+        common::load_materials("handshake-security-server").expect(
+            "load fixture cert; see tests/fixtures and generate_certificate.sh",
+        );
+    let generator = common::load_parent_generator().expect("credential generator");
     let dc_other = generator
         .generate("different-service-name", 3600)
         .expect("second DC");

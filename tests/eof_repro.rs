@@ -11,12 +11,12 @@
 //!
 //! This test uses a short wall-clock timeout so a hung server fails fast instead of blocking CI.
 
-use std::path::PathBuf;
+mod common;
+
 use std::time::Duration;
 
 use fizz_rs::{
-    Certificate, CertificatePublic, ClientTlsContext, CredentialGenerator, DelegatedCredentialData,
-    ServerTlsContext,
+    CertificatePublic, ClientTlsContext, DelegatedCredentialData, ServerTlsContext,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -25,40 +25,6 @@ use tokio::time::timeout;
 
 /// UTF-8 body sent after the big-endian `i32` length prefix (must match `write_i32` / `read_i32`).
 const EOF_REPRO_PAYLOAD: &str = "Text sent via delegated TLS!";
-
-fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-fn load_test_materials() -> Result<
-    (
-        CertificatePublic,
-        DelegatedCredentialData,
-        fizz_rs::VerificationInfo,
-        PathBuf,
-    ),
-    String,
-> {
-    let dir = fixtures_dir();
-    let cert_path = dir.join("fizz.crt");
-    let key_path = dir.join("fizz.key");
-
-    let cert = Certificate::load_from_files(
-        cert_path.to_str().ok_or("cert path utf-8")?,
-        key_path.to_str().ok_or("key path utf-8")?,
-    )
-    .map_err(|e| e.to_string())?;
-    let cert_public = CertificatePublic::load_from_file(cert_path.to_str().unwrap())
-        .map_err(|e| e.to_string())?;
-
-    let generator = CredentialGenerator::new(cert).map_err(|e| e.to_string())?;
-    let dc = generator
-        .generate("eof-repro-test", 3600)
-        .map_err(|e| e.to_string())?;
-    let verification_info = dc.verification_info();
-
-    Ok((cert_public, dc, verification_info, cert_path))
-}
 
 /// Same framing as `demo/fizz-rs`: `i32` length prefix then UTF-8 body (here we send a fixed `i32`
 /// and a string like the demo).
@@ -99,7 +65,7 @@ async fn run_server(
 async fn run_client(
     addr: std::net::SocketAddr,
     verification_info: fizz_rs::VerificationInfo,
-    ca: PathBuf,
+    ca: std::path::PathBuf,
 ) -> Result<(), String> {
     let stream = tokio::net::TcpStream::connect(addr)
         .await
@@ -128,9 +94,10 @@ async fn run_client(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_observes_eof_after_client_shutdown() {
-    let (cert_public, dc, verification_info, ca_path) = load_test_materials().expect(
-        "load fixtures; run openssl per generate_certificate.sh in tests/fixtures if missing",
-    );
+    let (cert_public, dc, verification_info, ca_path) = common::load_materials("eof-repro-test")
+        .expect(
+            "load fixtures; run openssl per generate_certificate.sh in tests/fixtures if missing",
+        );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
