@@ -36,11 +36,18 @@ jobs:
         with:
           toolchain: stable
 
+      # Share rustc/llvm invocations across runs (helps when rust-cache misses).
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Native deps live under target/; default prefixes are usually enough.
+          shared-key: fizz-rs
 
-      - name: Build
-        run: cargo build
-
-      - name: Run tests
+      # One compile pass: library + integration tests (avoids redundant `cargo build`).
+      - name: Build and test
+        env:
+          SCCACHE_GHA_ENABLED: "true"
         run: cargo test
