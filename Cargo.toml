@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/tls_bench"]
+resolver = "2"
+
 [package]
 name = "fizz_rs"
 version = "0.1.0"
