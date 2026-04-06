@@ -26,6 +26,7 @@ struct FizzServerContext;
 struct FizzServerConnection;
 struct FizzClientContext;
 struct FizzClientConnection;
+struct IoContext;
 
 namespace rust {
 inline namespace cxxbridge1 {
@@ -119,45 +120,14 @@ size_t client_connection_write(
     rust::Slice<const uint8_t> buf);
 rust::String client_connection_peer_cert(const FizzClientConnection& conn);
 
-// Forward declare IoContext from Rust
-// struct IoContext;
-
-// Async server TLS FFI function declarations (channel-based)
-// void server_connection_handshake_async(
-//     FizzServerConnection& conn,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
-// void server_connection_read_async(
-//     FizzServerConnection& conn,
-//     rust::Slice<uint8_t> buf,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
-// void server_connection_copy_read_data(
-//     FizzServerConnection& conn,
-//     rust::Slice<uint8_t> dest);
-// void server_connection_write_async(
-//     FizzServerConnection& conn,
-//     rust::Slice<const uint8_t> buf,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
-
-// Async client TLS FFI function declarations (channel-based)
-// void client_connection_handshake_async(
-//     FizzClientConnection& conn,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
-// void client_connection_read_async(
-//     FizzClientConnection& conn,
-//     rust::Slice<uint8_t> buf,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
-// void client_connection_copy_read_data(
-//     FizzClientConnection& conn,
-//     rust::Slice<uint8_t> dest);
-// void client_connection_write_async(
-//     FizzClientConnection& conn,
-//     rust::Slice<const uint8_t> buf,
-//     rust::Fn<void(rust::Box<IoContext>, size_t, rust::String)> callback,
-//     rust::Box<IoContext> context);
+// Async handshake FFI function declarations (oneshot-channel based, no spin-wait).
+// IoContext is an opaque Rust type declared via extern "Rust" in bridge.rs;
+// handle_io_result is the Rust callback invoked by the C++ handshake callbacks.
+void server_connection_handshake_async(
+    FizzServerConnection& conn,
+    rust::Box<IoContext> context);
+void client_connection_handshake_async(
+    FizzClientConnection& conn,
+    rust::Box<IoContext> context);
 
 #endif // FIZZ_RS_BRIDGE_DECL_H

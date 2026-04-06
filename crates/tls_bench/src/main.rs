@@ -49,7 +49,10 @@ impl Preset {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "tls_bench", about = "Tokio TLS echo benchmark (tcp / rustls / fizz)")]
+#[command(
+    name = "tls_bench",
+    about = "Tokio TLS echo benchmark (tcp / rustls / fizz)"
+)]
 struct Cli {
     /// Which TLS (or TCP) stack to exercise
     #[arg(long, value_enum)]
@@ -94,23 +97,21 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-fn load_fizz_materials() -> Result<(CertificatePublic, fizz_rs::DelegatedCredentialData, fizz_rs::VerificationInfo, PathBuf)> {
+fn load_fizz_materials() -> Result<(
+    CertificatePublic,
+    fizz_rs::DelegatedCredentialData,
+    fizz_rs::VerificationInfo,
+    PathBuf,
+)> {
     let dir = fixtures_dir();
     let cert_path = dir.join("fizz.crt");
     let key_path = dir.join("fizz.key");
     let cert = Certificate::load_from_files(
-        cert_path
-            .to_str()
-            .context("cert path utf-8")?,
-        key_path
-            .to_str()
-            .context("key path utf-8")?,
+        cert_path.to_str().context("cert path utf-8")?,
+        key_path.to_str().context("key path utf-8")?,
     )?;
-    let cert_public = CertificatePublic::load_from_file(
-        cert_path
-            .to_str()
-            .context("cert path utf-8")?,
-    )?;
+    let cert_public =
+        CertificatePublic::load_from_file(cert_path.to_str().context("cert path utf-8")?)?;
     let generator = CredentialGenerator::new(cert)?;
     let dc = generator.generate("tls-bench", 3600)?;
     let verification_info = dc.verification_info();
@@ -128,7 +129,9 @@ fn rustls_configs() -> Result<(Arc<ServerConfig>, Arc<ClientConfig>)> {
         .map_err(|e| anyhow::anyhow!("rustls server config: {e}"))?;
 
     let mut roots = RootCertStore::empty();
-    roots.add(cert_der).map_err(|e| anyhow::anyhow!("root store: {e}"))?;
+    roots
+        .add(cert_der)
+        .map_err(|e| anyhow::anyhow!("root store: {e}"))?;
     let client_config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
@@ -153,7 +156,11 @@ async fn echo_server_tcp(
     Ok(())
 }
 
-async fn echo_client_tcp(addr: std::net::SocketAddr, batch_size: usize, rounds: usize) -> Result<()> {
+async fn echo_client_tcp(
+    addr: std::net::SocketAddr,
+    batch_size: usize,
+    rounds: usize,
+) -> Result<()> {
     let stream = TcpStream::connect(addr).await?;
     echo_client(stream, batch_size, rounds).await
 }
@@ -356,41 +363,35 @@ fn median_ms(samples: &[Duration]) -> f64 {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (
-        worker_threads,
-        max_blocking_threads,
-        connections,
-        batch_size,
-        rounds,
-        runs,
-    ) = if let Some(preset) = cli.preset {
-        let (w, mb, c, b, r, n) = preset.params();
-        (w, mb, c, b, r, n)
-    } else {
-        (
-            cli.worker_threads,
-            cli.max_blocking_threads,
-            cli.connections,
-            cli.batch_size,
-            cli.rounds,
-            cli.runs,
-        )
-    };
+    let (worker_threads, max_blocking_threads, connections, batch_size, rounds, runs) =
+        if let Some(preset) = cli.preset {
+            let (w, mb, c, b, r, n) = preset.params();
+            (w, mb, c, b, r, n)
+        } else {
+            (
+                cli.worker_threads,
+                cli.max_blocking_threads,
+                cli.connections,
+                cli.batch_size,
+                cli.rounds,
+                cli.runs,
+            )
+        };
 
     let backends: Vec<Backend> = if cli.all_backends {
         vec![Backend::Tcp, Backend::Rustls, Backend::Fizz]
     } else {
-        vec![cli.backend.context("pass --backend or use --all-backends")?]
+        vec![cli
+            .backend
+            .context("pass --backend or use --all-backends")?]
     };
 
     let rustls_cfgs = rustls_configs().ok();
-    let fizz_ctxs = load_fizz_materials()
-        .ok()
-        .map(|(cp, dc, vi, ca_path)| {
-            let server = ServerTlsContext::new(cp, dc).expect("fizz server ctx");
-            let client = ClientTlsContext::new(vi, ca_path.to_str().unwrap()).expect("fizz client ctx");
-            (Arc::new(server), Arc::new(client))
-        });
+    let fizz_ctxs = load_fizz_materials().ok().map(|(cp, dc, vi, ca_path)| {
+        let server = ServerTlsContext::new(cp, dc).expect("fizz server ctx");
+        let client = ClientTlsContext::new(vi, ca_path.to_str().unwrap()).expect("fizz client ctx");
+        (Arc::new(server), Arc::new(client))
+    });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
@@ -425,7 +426,10 @@ fn main() -> Result<()> {
             continue;
         }
         if matches!(backend, Backend::Fizz) && fizz_ctxs.is_none() {
-            eprintln!("fizz: skipping (failed to load {} — run from repo with tests/fixtures)", fixtures_dir().display());
+            eprintln!(
+                "fizz: skipping (failed to load {} — run from repo with tests/fixtures)",
+                fixtures_dir().display()
+            );
             println!(
                 "{},{},{},{},{},{},,,,fizz_fixtures_error",
                 backend_csv(backend),

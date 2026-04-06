@@ -283,15 +283,16 @@ void server_connection_handshake(FizzServerConnection& conn) {
           transport->accept(callback);
         });
 
-        // Wait for handshake to complete (processed by EventBase thread)
+        // Wait for handshake to complete (processed by EventBase thread).
+        // Under many concurrent accepts, handshakes may queue; keep this generous.
         auto startTime = std::chrono::steady_clock::now();
-        const auto timeout = std::chrono::seconds(5); // 5 second timeout
+        const auto timeout = std::chrono::seconds(120);
 
         while (!conn.handshakeComplete && conn.errorMessage.empty()) {
             // Check timeout
             auto elapsed = std::chrono::steady_clock::now() - startTime;
             if (elapsed > timeout) {
-                throw std::runtime_error("Handshake timed out after 5 seconds");
+                throw std::runtime_error("Handshake timed out after 120 seconds");
             }
 
             // Just sleep - EventBase thread will process the handshake
@@ -310,6 +311,62 @@ void server_connection_handshake(FizzServerConnection& conn) {
     } catch (const std::exception& e) {
         conn.handshakeComplete = false;
         throw std::runtime_error("Server handshake failed: " + std::string(e.what()));
+    }
+}
+
+void server_connection_handshake_async(
+    FizzServerConnection& conn,
+    rust::Box<IoContext> context) {
+    if (!conn.transport) {
+        throw std::runtime_error("No transport available");
+    }
+
+    auto* transport = static_cast<fizz::server::AsyncFizzServer*>(conn.transport);
+
+    class ServerHandshakeCallbackAsync
+        : public fizz::server::AsyncFizzServer::HandshakeCallback {
+        FizzServerConnection* conn_;
+        rust::Box<IoContext> context_;
+
+    public:
+        ServerHandshakeCallbackAsync(
+            FizzServerConnection* conn,
+            rust::Box<IoContext> ctx)
+            : conn_(conn), context_(std::move(ctx)) {}
+
+        void fizzHandshakeSuccess(
+            fizz::server::AsyncFizzServer* server) noexcept override {
+            conn_->handshakeComplete = true;
+            server->setReadCB(conn_);
+            handle_io_result(std::move(context_), 0, rust::String(""));
+        }
+
+        void fizzHandshakeError(
+            fizz::server::AsyncFizzServer*,
+            folly::exception_wrapper ex) noexcept override {
+            conn_->errorMessage = ex.what().toStdString();
+            handle_io_result(
+                std::move(context_), 0, rust::String(conn_->errorMessage));
+        }
+
+        void fizzHandshakeAttemptFallback(
+            fizz::server::AttemptVersionFallback) noexcept override {
+            conn_->errorMessage = "Version fallback attempted";
+            handle_io_result(
+                std::move(context_), 0, rust::String(conn_->errorMessage));
+        }
+    };
+
+    auto* callback =
+        new ServerHandshakeCallbackAsync(&conn, std::move(context));
+
+    try {
+        conn.evb->runInEventBaseThreadAndWait([&]() {
+            transport->accept(callback);
+        });
+    } catch (...) {
+        delete callback;
+        throw;
     }
 }
 

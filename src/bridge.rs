@@ -3,8 +3,7 @@
 //! This module defines the FFI boundary between Rust and C++ using the CXX framework.
 //! All shared types, opaque types, and FFI functions are declared here.
 
-// Re-export async context items for use in bridge
-// use crate::async_context::{IoContext, handle_io_result};
+pub use crate::async_context::{IoContext, handle_io_result};
 
 #[cxx::bridge]
 pub mod ffi {
@@ -85,12 +84,11 @@ pub mod ffi {
     // Rust Types Exposed to C++ (Async Contexts)
     // ============================================================================
 
-    // extern "Rust" {
-    //     type IoContext;
-    //
-    //     /// Callback invoked by C++ when async I/O operation completes
-    //     fn handle_io_result(context: Box<IoContext>, bytes: usize, error: String);
-    // }
+    extern "Rust" {
+        type IoContext;
+
+        fn handle_io_result(context: Box<IoContext>, bytes: usize, error: String);
+    }
 
     // ============================================================================
     // Opaque C++ Types
@@ -286,6 +284,20 @@ pub mod ffi {
 
         /// Get peer certificate as PEM string
         fn client_connection_peer_cert(conn: &FizzClientConnection) -> Result<String>;
+
+        // ========================================================================
+        // Async Handshake FFI (oneshot-channel based, no spin-wait)
+        // ========================================================================
+
+        fn server_connection_handshake_async(
+            conn: Pin<&mut FizzServerConnection>,
+            context: Box<IoContext>,
+        ) -> Result<()>;
+
+        fn client_connection_handshake_async(
+            conn: Pin<&mut FizzClientConnection>,
+            context: Box<IoContext>,
+        ) -> Result<()>;
     }
 }
 

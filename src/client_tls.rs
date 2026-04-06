@@ -100,26 +100,19 @@ impl ClientTlsContext {
     /// # }
     /// ```
     pub async fn connect(&self, socket: TcpStream, hostname: &str) -> Result<ClientConnection> {
-        // Extract FD (this transfers ownership)
         let fd = take_raw_fd(socket);
         let hostname_string = hostname.to_string();
 
-        // Get raw pointer to context and wrap in Send-able wrapper
         let ctx_sendable = unsafe {
             SendableRawPtr::new(
                 &self.inner as *const _ as *mut cxx::UniquePtr<ffi::FizzClientContext>,
             )
         };
 
-        // Create FFI connection in blocking task
-        // We return a raw pointer to avoid Send issues with CXX types
         let conn_sendable = tokio::task::spawn_blocking(
             move || -> Result<SendableRawPtr<cxx::UniquePtr<ffi::FizzClientConnection>>> {
-                // Safety: We have exclusive access to context during this call
-                // The context is only read, not modified
                 let ctx = unsafe { &*ctx_sendable.as_ptr() };
                 let conn = ffi::client_connect(ctx, fd, &hostname_string)?;
-                // Box the connection and return sendable raw pointer
                 Ok(unsafe { SendableRawPtr::new(Box::into_raw(Box::new(conn))) })
             },
         )
@@ -131,17 +124,25 @@ impl ClientTlsContext {
             ))
         })??;
 
-        // Re-box the connection pointer first
         let mut conn_inner_box = unsafe { Box::from_raw(conn_sendable.as_ptr()) };
 
-        // Perform async handshake using oneshot channel
-        ffi::client_connection_handshake(conn_inner_box.pin_mut())?;
+        let (io_ctx, receiver) = crate::async_context::IoContext::new();
 
-        // Convert Box back to raw pointer to avoid holding non-Send Box across await
-        // SAFETY: We immediately convert back to Box after the await
+        ffi::client_connection_handshake_async(conn_inner_box.pin_mut(), Box::new(io_ctx))
+            .map_err(|e| FizzError::TlsHandshakeError(e.to_string()))?;
+
+        // SAFETY: raw-pointer dance keeps the CXX UniquePtr alive across the
+        // await point without requiring it to be Send.
         let conn_raw = unsafe { SendableRawPtr::new(Box::into_raw(conn_inner_box)) };
 
-        // Convert back to Box after await
+        let result = receiver.await.map_err(|_| {
+            FizzError::TlsHandshakeError(
+                "Handshake channel closed unexpectedly".to_string(),
+            )
+        })?;
+
+        result.map_err(|e| FizzError::TlsHandshakeError(e))?;
+
         let conn_inner_box = unsafe { Box::from_raw(conn_raw.as_ptr()) };
 
         Ok(ClientConnection {

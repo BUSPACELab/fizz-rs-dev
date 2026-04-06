@@ -447,19 +447,19 @@ void client_connection_handshake(FizzClientConnection& conn) {
                 sni,
                 folly::none, // PSK identity
                 folly::none, // ECH configs
-                std::chrono::milliseconds(30000) // 30 second handshake timeout
+                std::chrono::milliseconds(120000) // match outer wait; stress / many connections
             );
         });
 
         // // Wait for handshake to complete (processed by EventBase thread)
         auto startTime = std::chrono::steady_clock::now();
-        const auto timeout = std::chrono::seconds(30); // 30 second timeout
+        const auto timeout = std::chrono::seconds(120);
 
         while (!conn.handshakeComplete && conn.errorMessage.empty()) {
             // Check timeout
             auto elapsed = std::chrono::steady_clock::now() - startTime;
             if (elapsed > timeout) {
-                throw std::runtime_error("Handshake timed out after 30 seconds");
+                throw std::runtime_error("Handshake timed out after 120 seconds");
             }
             // Just sleep - EventBase thread will process the handshake
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -478,6 +478,105 @@ void client_connection_handshake(FizzClientConnection& conn) {
     } catch (const std::exception& e) {
         conn.handshakeComplete = false;
         throw std::runtime_error("Client handshake failed: " + std::string(e.what()));
+    }
+}
+
+void client_connection_handshake_async(
+    FizzClientConnection& conn,
+    rust::Box<IoContext> context) {
+    if (!conn.transport) {
+        throw std::runtime_error("No transport available");
+    }
+
+    auto* transport = static_cast<fizz::client::AsyncFizzClient*>(conn.transport);
+
+    class ClientHandshakeCallbackAsync
+        : public fizz::client::AsyncFizzClient::HandshakeCallback {
+        FizzClientConnection* conn_;
+        rust::Box<IoContext> context_;
+
+    public:
+        ClientHandshakeCallbackAsync(
+            FizzClientConnection* conn,
+            rust::Box<IoContext> ctx)
+            : conn_(conn), context_(std::move(ctx)) {}
+
+        void fizzHandshakeSuccess(
+            fizz::client::AsyncFizzClient* client) noexcept override {
+            try {
+                const auto& state = client->getState();
+                auto serverCert = state.serverCert();
+                if (!serverCert) {
+                    handle_io_result(
+                        std::move(context_), 0,
+                        rust::String("No server certificate after handshake"));
+                    return;
+                }
+
+                const auto* peerDC =
+                    dynamic_cast<const fizz::extensions::PeerDelegatedCredential*>(
+                        serverCert.get());
+                if (!peerDC) {
+                    handle_io_result(
+                        std::move(context_), 0,
+                        rust::String("Server did not present a delegated credential certificate"));
+                    return;
+                }
+
+                std::string mismatch =
+                    verifyVerificationInfoAgainstPeerDelegatedCredential(*conn_, *peerDC);
+                if (!mismatch.empty()) {
+                    client->closeNow();
+                    handle_io_result(
+                        std::move(context_), 0, rust::String(mismatch));
+                    return;
+                }
+
+                conn_->peerCertPem = "[Certificate extracted successfully]";
+                client->setReadCB(conn_);
+                conn_->handshakeComplete = true;
+                handle_io_result(std::move(context_), 0, rust::String(""));
+            } catch (const std::exception& e) {
+                handle_io_result(
+                    std::move(context_), 0,
+                    rust::String(
+                        std::string("Failed to verify delegated credential: ") +
+                        e.what()));
+            }
+        }
+
+        void fizzHandshakeError(
+            fizz::client::AsyncFizzClient*,
+            folly::exception_wrapper ex) noexcept override {
+            conn_->errorMessage = ex.what().toStdString();
+            handle_io_result(
+                std::move(context_), 0, rust::String(conn_->errorMessage));
+        }
+    };
+
+    std::string sniHostname = conn.peerCertPem;
+    conn.peerCertPem.clear();
+
+    std::shared_ptr<const fizz::CertificateVerifier> verifier = conn.verifier;
+
+    folly::Optional<std::string> sni = sniHostname.empty()
+        ? folly::none
+        : folly::Optional<std::string>(sniHostname);
+
+    auto* callback =
+        new ClientHandshakeCallbackAsync(&conn, std::move(context));
+
+    try {
+        conn.evb->runInEventBaseThreadAndWait([&]() {
+            transport->connect(
+                callback, verifier, sni,
+                folly::none,
+                folly::none,
+                std::chrono::milliseconds(120000));
+        });
+    } catch (...) {
+        delete callback;
+        throw;
     }
 }
 
