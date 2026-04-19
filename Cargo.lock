@@ -571,6 +571,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tls_bench_ablation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fizz_rs",
+ "rcgen",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "tokio"
 version = "1.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
