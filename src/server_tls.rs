@@ -8,7 +8,9 @@ use crate::certificates::CertificatePublic;
 use crate::credentials::DelegatedCredentialData;
 use crate::error::{FizzError, Result};
 use crate::io::{take_raw_fd, SendableRawPtr};
+use crate::read_waker::ReadWaker;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -150,10 +152,17 @@ impl ServerTlsContext {
 
         result.map_err(|e| FizzError::TlsHandshakeError(e))?;
 
-        let conn_inner_box = unsafe { Box::from_raw(conn_raw.as_ptr()) };
+        let mut conn_inner_box = unsafe { Box::from_raw(conn_raw.as_ptr()) };
+
+        let read_waker = Arc::new(ReadWaker::new());
+        ffi::set_server_read_waker(
+            conn_inner_box.pin_mut(),
+            Box::new(read_waker.clone_for_cpp()),
+        );
 
         Ok(ServerConnection {
             inner: *conn_inner_box,
+            read_waker,
         })
     }
 }
@@ -165,6 +174,7 @@ impl ServerTlsContext {
 /// seamless integration with Tokio.
 pub struct ServerConnection {
     inner: cxx::UniquePtr<ffi::FizzServerConnection>,
+    read_waker: Arc<ReadWaker>,
 }
 
 impl std::fmt::Debug for ServerConnection {
@@ -203,8 +213,11 @@ impl tokio::io::AsyncRead for ServerConnection {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let conn_pin = self.inner.pin_mut();
-        let read_size = match ffi::server_read_size_hint(conn_pin) {
+        // Register before inspecting state — any wake that races with our check
+        // will still hit the registered waker and cause us to be re-polled.
+        self.read_waker.register(cx.waker());
+
+        let read_size = match ffi::server_read_size_hint(self.inner.pin_mut()) {
             Ok(n) => n,
             Err(e) => {
                 return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
@@ -215,27 +228,10 @@ impl tokio::io::AsyncRead for ServerConnection {
             if ffi::server_connection_read_eof(&self.inner) {
                 return Poll::Ready(Ok(()));
             }
-            cx.waker().wake_by_ref();
             return Poll::Pending;
         }
 
-        // //If we won't be able to read the buffer without reallocation, we need to reallocate first.
-        // if self.read_buf.remaining() <= read_size || self.read_buf.capacity() <= read_size {
-        //     self.read_buf.reserve(8192);
-        // }
-        //
-
         let buf_slice = buf.initialize_unfilled();
-
-        //Take the initialized_buffer, write into it, advance it.
-        //SAFETY: We KNOW length of read_slice is at least as big as the size we are about to read.
-        //As for the MaybeUninit, we know we are going to fill at most read_size bytes into the buffer.
-        //This is handled by the call to advance
-        // Get a slice to read into
-        // let chunk = self.read_buf.chunk_mut();
-        // let buf_ptr = chunk.as_mut_ptr();
-        // let buf_len = chunk.len();
-        // let mut buf_slice = unsafe { std::slice::from_raw_parts_mut(buf_ptr, buf_len) };
 
         let read = match ffi::server_connection_read(self.inner.pin_mut(), buf_slice) {
             Ok(n) => n,
@@ -245,11 +241,9 @@ impl tokio::io::AsyncRead for ServerConnection {
         };
 
         if read == 0 {
-            // This lets us distinguish between EOF and no data available.
             if ffi::server_connection_read_eof(&self.inner) {
                 return Poll::Ready(Ok(()));
             }
-            cx.waker().wake_by_ref();
             return Poll::Pending;
         }
 

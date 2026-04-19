@@ -4,6 +4,7 @@
 //! All shared types, opaque types, and FFI functions are declared here.
 
 pub use crate::async_context::{IoContext, handle_io_result};
+pub use crate::read_waker::{ReadWaker, wake_read_waker};
 
 #[cxx::bridge]
 pub mod ffi {
@@ -88,6 +89,12 @@ pub mod ffi {
         type IoContext;
 
         fn handle_io_result(context: Box<IoContext>, bytes: usize, error: String);
+
+        /// Opaque Rust `Waker` slot. `poll_read` registers a `Waker` into it;
+        /// C++ read callbacks call `wake_read_waker` to fire it.
+        type ReadWaker;
+
+        fn wake_read_waker(waker: &ReadWaker);
     }
 
     // ============================================================================
@@ -298,6 +305,20 @@ pub mod ffi {
             conn: Pin<&mut FizzClientConnection>,
             context: Box<IoContext>,
         ) -> Result<()>;
+
+        /// Install a read-side `Waker` slot on the server connection. The C++
+        /// side fires it when new application data arrives or EOF is observed.
+        fn set_server_read_waker(
+            conn: Pin<&mut FizzServerConnection>,
+            waker: Box<ReadWaker>,
+        );
+
+        /// Install a read-side `Waker` slot on the client connection. The C++
+        /// side fires it when new application data arrives or EOF is observed.
+        fn set_client_read_waker(
+            conn: Pin<&mut FizzClientConnection>,
+            waker: Box<ReadWaker>,
+        );
     }
 }
 

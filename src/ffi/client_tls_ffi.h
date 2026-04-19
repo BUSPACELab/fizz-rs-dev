@@ -22,9 +22,12 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <optional>
+#include <rust/cxx.h>
 
 // Forward declare shared structs from bridge
 struct VerificationInfo;
+struct ReadWaker;
 
 // Opaque type for client TLS context
 // Full definition is required for CXX UniquePtr operations
@@ -92,6 +95,10 @@ struct FizzClientConnection : public folly::AsyncTransportWrapper::ReadCallback 
     std::atomic<size_t> bytesRead;
     /// Set when `readEOF()` is invoked (peer closed / no more application data).
     std::atomic<bool> readEof{false};
+
+    /// Rust-owned waker slot. Fired from `readDataAvailable` / `readEOF` so
+    /// that the Rust `poll_read` task can wake without spin-polling.
+    std::optional<rust::Box<ReadWaker>> read_waker;
 };
 
 // Include function declarations (uses forward-declared rust:: types)

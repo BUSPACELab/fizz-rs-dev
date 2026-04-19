@@ -149,23 +149,26 @@ void FizzClientConnection::getReadBuffer(void** bufReturn, size_t* lenReturn) {
 }
 
 void FizzClientConnection::readDataAvailable(size_t len) noexcept {
-    // std::cout << "Client::readDataAvailable: Reading available data of size " << len << std::endl;
     // Commit the bytes that were read into the queue
     readBufQueue_.postallocate(len);
     bytesRead += len;
     //Wipe the number of held locks.
     size_t nb_lock_releases = pending_read_lock_numbers.exchange(0);
-    // std::cout << "We will be releasing " << nb_lock_releases << " locks" << std::endl;
     for (int i=0; i < nb_lock_releases; i++) {
       read_mutex.unlock();
+    }
+    if (read_waker) {
+        wake_read_waker(**read_waker);
     }
 }
 
 void FizzClientConnection::readEOF() noexcept {
     readEof.store(true, std::memory_order_release);
     auto* transport_ = static_cast<fizz::client::AsyncFizzClient*>(transport);
-    // std::cout << "Server closed connection" << std::endl;
     transport_->closeNow();
+    if (read_waker) {
+        wake_read_waker(**read_waker);
+    }
 }
 
 void FizzClientConnection::readErr(const folly::AsyncSocketException& ex) noexcept {
@@ -723,6 +726,12 @@ size_t client_connection_write(
           throw std::runtime_error("Write failed" + err_str);
         }
         return write_length;
+}
+
+void set_client_read_waker(
+    FizzClientConnection& conn,
+    rust::Box<ReadWaker> waker) {
+    conn.read_waker = std::move(waker);
 }
 
 rust::String client_connection_peer_cert(const FizzClientConnection& conn) {

@@ -6,8 +6,10 @@
 use crate::bridge::ffi;
 use crate::error::{FizzError, Result};
 use crate::io::{take_raw_fd, SendableRawPtr};
+use crate::read_waker::ReadWaker;
 use crate::types::VerificationInfo;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
 
@@ -143,10 +145,17 @@ impl ClientTlsContext {
 
         result.map_err(|e| FizzError::TlsHandshakeError(e))?;
 
-        let conn_inner_box = unsafe { Box::from_raw(conn_raw.as_ptr()) };
+        let mut conn_inner_box = unsafe { Box::from_raw(conn_raw.as_ptr()) };
+
+        let read_waker = Arc::new(ReadWaker::new());
+        ffi::set_client_read_waker(
+            conn_inner_box.pin_mut(),
+            Box::new(read_waker.clone_for_cpp()),
+        );
 
         Ok(ClientConnection {
             inner: *conn_inner_box,
+            read_waker,
         })
     }
 }
@@ -158,6 +167,7 @@ impl ClientTlsContext {
 /// seamless integration with Tokio.
 pub struct ClientConnection {
     inner: cxx::UniquePtr<ffi::FizzClientConnection>,
+    read_waker: Arc<ReadWaker>,
 }
 
 impl std::fmt::Debug for ClientConnection {
@@ -211,13 +221,14 @@ impl tokio::io::AsyncRead for ClientConnection {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let read_size = {
-            let conn_pin = self.inner.pin_mut();
-            match ffi::client_read_size_hint(conn_pin) {
-                Ok(n) => n,
-                Err(e) => {
-                    return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
-                }
+        // Register before inspecting state — any wake that races with our check
+        // will still hit the registered waker and cause us to be re-polled.
+        self.read_waker.register(cx.waker());
+
+        let read_size = match ffi::client_read_size_hint(self.inner.pin_mut()) {
+            Ok(n) => n,
+            Err(e) => {
+                return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
             }
         };
 
@@ -225,39 +236,24 @@ impl tokio::io::AsyncRead for ClientConnection {
             if ffi::client_connection_read_eof(&self.inner) {
                 return Poll::Ready(Ok(()));
             }
-            cx.waker().wake_by_ref();
             return Poll::Pending;
         }
 
-        // println!("On poll_read, we have {} available to read from size_hint", read_size);
+        let buf_slice = buf.initialize_unfilled();
 
-        let mut buf_slice = buf.initialize_unfilled();
-
-        // println!("We will try to read into a buffer of size {}", buf_slice.len());
-
-        let conn_pin = self.inner.pin_mut();
-        let read = match ffi::client_connection_read(conn_pin, &mut buf_slice) {
+        let read = match ffi::client_connection_read(self.inner.pin_mut(), buf_slice) {
             Ok(n) => n,
             Err(e) => {
                 return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
             }
         };
 
-        // println!("On poll_read, we have read {} ", read);
-
         if read == 0 {
-            // This lets us distinguish between EOF and no data available.
             if ffi::client_connection_read_eof(&self.inner) {
                 return Poll::Ready(Ok(()));
             }
-            cx.waker().wake_by_ref();
             return Poll::Pending;
         }
-        //
-        // unsafe { self.read_buf.advance_mut(read) };
-        // //THis copies the buffer... Is there a way to
-        // buf.put_slice(&buf_slice[..read]);
-        // let _ = self.read_buf.split_to(read);
 
         buf.advance(read);
         Poll::Ready(Ok(()))

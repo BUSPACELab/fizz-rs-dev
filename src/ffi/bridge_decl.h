@@ -27,6 +27,7 @@ struct FizzServerConnection;
 struct FizzClientContext;
 struct FizzClientConnection;
 struct IoContext;
+struct ReadWaker;
 
 namespace rust {
 inline namespace cxxbridge1 {
@@ -129,5 +130,14 @@ void server_connection_handshake_async(
 void client_connection_handshake_async(
     FizzClientConnection& conn,
     rust::Box<IoContext> context);
+
+// Install read-side waker slot. The C++ read callbacks call
+// wake_read_waker() (declared in the cxx-generated header) to fire it.
+void set_server_read_waker(
+    FizzServerConnection& conn,
+    rust::Box<ReadWaker> waker);
+void set_client_read_waker(
+    FizzClientConnection& conn,
+    rust::Box<ReadWaker> waker);
 
 #endif // FIZZ_RS_BRIDGE_DECL_H

@@ -167,18 +167,21 @@ void FizzServerConnection::readDataAvailable(size_t len) noexcept {
     readBufQueue_.postallocate(len);
     bytesRead += len;
     size_t nb_lock_releases = pending_read_lock_numbers.exchange(0);
-    // std::cout << "We will be releasing " << nb_lock_releases << " locks" << std::endl;
     for (int i=0; i < nb_lock_releases; i++) {
       read_mutex.unlock();
     }
-    // guard = std::optional<std::lock_guard<std::mutex>>();
-
+    if (read_waker) {
+        wake_read_waker(**read_waker);
+    }
 }
 
 void FizzServerConnection::readEOF() noexcept {
     readEof.store(true, std::memory_order_release);
     auto* transport_ = static_cast<fizz::server::AsyncFizzServer*>(transport);
     transport_->closeNow();
+    if (read_waker) {
+        wake_read_waker(**read_waker);
+    }
 }
 
 void FizzServerConnection::readErr(const folly::AsyncSocketException& ex) noexcept {
@@ -508,4 +511,10 @@ size_t server_connection_write(
       }
       // Return number of bytes written
       return buf.size();
+}
+
+void set_server_read_waker(
+    FizzServerConnection& conn,
+    rust::Box<ReadWaker> waker) {
+    conn.read_waker = std::move(waker);
 }
