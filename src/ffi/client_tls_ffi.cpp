@@ -121,7 +121,6 @@ static std::string verifyVerificationInfoAgainstPeerDelegatedCredential(
 
 FizzClientConnection::~FizzClientConnection() {
     try {
-      std::cout << "Invoking client destructor" << std::endl;
         // Stop EventBase thread if it's running
             if (evb_thread && evb_thread->joinable()) {
                 if (evb) {

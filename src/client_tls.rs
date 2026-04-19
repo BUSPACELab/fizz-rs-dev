@@ -194,14 +194,12 @@ impl ClientConnection {
     ///
     /// This gracefully closes the TLS connection and cleans up resources.
     pub fn close(&mut self) {
-        println!("Closing connection");
         ffi::client_connection_close(self.inner.pin_mut());
     }
 }
 
 impl Drop for ClientConnection {
     fn drop(&mut self) {
-        println!("Cleaning up Client connection");
         self.close();
     }
 }

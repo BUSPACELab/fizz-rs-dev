@@ -178,7 +178,6 @@ void FizzServerConnection::readDataAvailable(size_t len) noexcept {
 void FizzServerConnection::readEOF() noexcept {
     readEof.store(true, std::memory_order_release);
     auto* transport_ = static_cast<fizz::server::AsyncFizzServer*>(transport);
-    std::cout << "Client closed connection" << std::endl;
     transport_->closeNow();
 }
 
@@ -253,7 +252,6 @@ void server_connection_handshake(FizzServerConnection& conn) {
                 : complete_(complete), error_(error), conn_(conn){}
 
             void fizzHandshakeSuccess(fizz::server::AsyncFizzServer* server) noexcept override {
-                std::cout << "Server: Handshake complete" << std::endl;
                 complete_ = true;
                 server->setReadCB(conn_);
             }
