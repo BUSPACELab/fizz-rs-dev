@@ -72,6 +72,13 @@ struct FizzServerConnection : public folly::AsyncTransportWrapper::ReadCallback 
     /// Rust-owned waker slot. Fired from `readDataAvailable` / `readEOF` so
     /// that the Rust `poll_read` task can wake without spin-polling.
     std::optional<rust::Box<ReadWaker>> read_waker;
+
+    /// Set by the async write-completion callback on `writeErr`. Checked at
+    /// the top of `server_connection_write` on the next call so the error
+    /// propagates to Rust even though dispatch is fire-and-forget.
+    std::atomic<bool> writeError{false};
+    std::mutex writeErrorMutex;
+    std::string writeErrorMessage;
 };
 
 // Include function declarations (uses forward-declared rust:: types)

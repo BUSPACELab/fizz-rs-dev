@@ -676,6 +676,37 @@ bool client_connection_read_eof(const FizzClientConnection& conn) {
     return conn.readEof.load(std::memory_order_acquire);
 }
 
+namespace {
+// Heap-allocated, self-deleting write callback. Records errors on the conn
+// for the next `client_connection_write` to observe.
+class AsyncClientWriteCallback
+    : public folly::AsyncTransportWrapper::WriteCallback {
+    FizzClientConnection* conn_;
+public:
+    explicit AsyncClientWriteCallback(FizzClientConnection* conn) : conn_(conn) {}
+
+    void writeSuccess() noexcept override {
+        delete this;
+    }
+
+    void writeErr(
+        size_t /*bytesWritten*/,
+        const folly::AsyncSocketException& ex) noexcept override {
+        {
+            std::lock_guard<std::mutex> lock(conn_->writeErrorMutex);
+            conn_->writeErrorMessage = std::string(ex.what());
+        }
+        conn_->writeError.store(true, std::memory_order_release);
+        auto* transport =
+            static_cast<fizz::client::AsyncFizzClient*>(conn_->transport);
+        if (transport) {
+            transport->closeNow();
+        }
+        delete this;
+    }
+};
+}  // namespace
+
 size_t client_connection_write(
     FizzClientConnection& conn,
     rust::Slice<const uint8_t> buf) {
@@ -687,44 +718,22 @@ size_t client_connection_write(
             throw std::runtime_error("No transport available");
         }
 
-        auto* transport = static_cast<fizz::client::AsyncFizzClient*>(conn.transport);
-        // std::cout << "Client: Sync Write" << std::endl;
-        //
-        auto buf_ = folly::IOBuf::copyBuffer(buf.data(), buf.size());
-
-        auto write_length = buf_->length();
-
-        class WriteCallback : public folly::AsyncTransportWrapper::WriteCallback {
-        std::string& ex_string_;
-        bool& error_;
-        fizz::client::AsyncFizzClient* transport_;
-
-        public:
-            WriteCallback(std::string& ex_string, bool& error, fizz::client::AsyncFizzClient* transport): ex_string_(ex_string), error_(error), transport_(transport) {}
-
-            void writeSuccess() noexcept override {
-            }
-
-            void writeErr(size_t /*bytesWritten*/, const folly::AsyncSocketException& ex) noexcept override {
-                std::cerr << "Write failed" << std::endl;
-                ex_string_ = std::string(ex.what());
-                error_ = true;
-                transport_->closeNow();
-            }
-      };
-
-        std::string err_str;
-        bool error = false;
-
-        auto wr_cb = WriteCallback(err_str, error, transport);
-        conn.evb->runInEventBaseThreadAndWait([&]() {
-          transport->writeChain(&wr_cb, std::move(buf_));
-        });
-
-
-        if (error) {
-          throw std::runtime_error("Write failed" + err_str);
+        // Surface any error from a prior fire-and-forget write.
+        if (conn.writeError.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(conn.writeErrorMutex);
+            throw std::runtime_error("Write failed: " + conn.writeErrorMessage);
         }
+
+        auto* transport = static_cast<fizz::client::AsyncFizzClient*>(conn.transport);
+        auto buf_ = folly::IOBuf::copyBuffer(buf.data(), buf.size());
+        auto write_length = buf_->length();
+        auto* cb = new AsyncClientWriteCallback(&conn);
+
+        conn.evb->runInEventBaseThread(
+            [transport, cb, b = std::move(buf_)]() mutable {
+                transport->writeChain(cb, std::move(b));
+            });
+
         return write_length;
 }
 
